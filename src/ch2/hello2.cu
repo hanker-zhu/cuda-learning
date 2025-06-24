@@ -7,12 +7,12 @@ __global__ void hello_from_gpu() {
 
 int main(void) {
     hello_from_gpu<<<1, 1>>>();
-    // cudaError_t errSync  = cudaGetLastError();
-    // cudaError_t errAsync = cudaDeviceSynchronize();
-    // if (errSync != cudaSuccess)
-    //     printf("Sync kernel error: %s\n", cudaGetErrorString(errSync));
-    // if (errAsync != cudaSuccess)
-    //     printf("Async kernel error: %s\n", cudaGetErrorString(errAsync));
+    cudaError_t errSync  = cudaGetLastError();
+    cudaError_t errAsync = cudaDeviceSynchronize();
+    if (errSync != cudaSuccess)
+        printf("Sync kernel error: %s\n", cudaGetErrorString(errSync));
+    if (errAsync != cudaSuccess)
+        printf("Async kernel error: %s\n", cudaGetErrorString(errAsync));
     printf("Hello from CPU\n");
     return 0;
 }
