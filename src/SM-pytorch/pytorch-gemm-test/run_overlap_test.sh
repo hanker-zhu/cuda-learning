@@ -1,20 +1,24 @@
-# filepath: pytorch-gemm-test/run_overlap_test.sh
 #!/bin/bash
 
-# 使用2个GPU进行测试
-nproc_per_node=2
-export CUDA_VISIBLE_DEVICES=0,1
+# 使用单个GPU进行测试
+export CUDA_VISIBLE_DEVICES=0
 
-# 定义要测试的一系列Grid维度
-# 例如，从1个线程块到80个线程块
-# A100有108个SMs，所以这个范围可以很好地展示从无重叠到完全重叠的过程
-GRID_DIMS_TO_TEST="1 4 8 16 32 40"
+# 针对 Tesla T4 (40 SMs) 优化测试参数
+# 测试将覆盖资源占用不足、饱和以及超额订阅的情况
 
-torchrun \
-    --nproc_per_node=$nproc_per_node \
-    --nnodes=1 \
-    overlap_perf_test.py \
-    --comm-size 4096 \
-    --comp-size 4096 \
-    --repeats 200 \
-    --grid-dims ${GRID_DIMS_TO_TEST}
+# for gemm_sms in 1~40, 
+for gemm_sms in 5 10 15 20 25 30 35
+do
+    # 为不同场景设置vec_add_sms值
+    # 分别测试不同资源占用情况
+    vec_add_sms=$((40 - gemm_sms))
+    
+    echo "--- Testing with GEMM SMs: ${gemm_sms}, VecAdd SMs: ${vec_add_sms} ---"
+    python3 overlap_perf_test.py \
+        --gemm-size 4096 \
+        --vec-size 16777216 \
+        --repeats 20 \
+        --warmup 5 \
+        --gemm-sms ${gemm_sms} \
+        --vec-add-sms ${vec_add_sms}
+done

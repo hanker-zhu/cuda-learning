@@ -15,6 +15,14 @@ __global__ void basic_gemm_kernel(const float* A, const float* B, float* C, int 
     }
 }
 
+// 新增：一个简单的向量加法 CUDA 核函数
+__global__ void vector_add_kernel(const float* X, const float* Y, float* Z, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        Z[idx] = X[idx] + Y[idx];
+    }
+}
+
 // 主机端包装函数，使用 extern "C" 防止 C++ 名称修饰
 // 关键：grid_dim_x 和 grid_dim_y 参数允许我们从外部控制线程块数量
 extern "C" {
@@ -27,5 +35,13 @@ void launch_gemm_kernel(float* A, float* B, float* C, int M, int N, int K, int g
 
     // 启动 CUDA 核函数
     basic_gemm_kernel<<<num_blocks, threads_per_block>>>(A, B, C, M, N, K);
+}
+
+// 修改：向量加法核函数的启动器，接受 grid_dim_x
+void launch_vector_add_kernel(float* X, float* Y, float* Z, int size, int grid_dim_x) {
+    int threads_per_block = 256;
+    // 使用传入的 grid_dim_x 作为线程块数量
+    dim3 num_blocks(grid_dim_x);
+    vector_add_kernel<<<num_blocks, threads_per_block>>>(X, Y, Z, size);
 }
 }
