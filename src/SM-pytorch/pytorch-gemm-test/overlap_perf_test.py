@@ -70,8 +70,8 @@ def measure_performance(A, B, C, X, Y, Z, gemm_blocks, vec_add_blocks, repeats, 
             gemm_custom_grid(A_inputs[i], B_inputs[i], C_outputs[i], gemm_blocks, 1)
         with torch.cuda.stream(vec_add_stream):
             vector_add(X_inputs[i], Y_inputs[i], Z_outputs[i], vec_add_blocks)
-        torch.cuda.synchronize()
-        
+        # torch.cuda.synchronize()
+    torch.cuda.synchronize()
     overlap_end_event.record()
     
     torch.cuda.synchronize()
