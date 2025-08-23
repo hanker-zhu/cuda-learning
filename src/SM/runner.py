@@ -207,29 +207,19 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
     gemm_num_blocks = gemm_blocks_config[0] * gemm_blocks_config[1] * gemm_blocks_config[2]
     vecadd_num_blocks = vecadd_blocks_config[0] * vecadd_blocks_config[1] * vecadd_blocks_config[2]
     
-    # GEMM 数据初始化
-    h_A_gemm = np.random.randn(M, K).astype(np.float32)
-    h_B_gemm = np.random.randn(K, N).astype(np.float32)
-    h_C_gemm = np.empty((M, N), dtype=np.float32)
-    d_A_gemm = cuda.mem_alloc(h_A_gemm.nbytes)
-    d_B_gemm = cuda.mem_alloc(h_B_gemm.nbytes)
-    d_C_gemm = cuda.mem_alloc(h_C_gemm.nbytes)
-    cuda.memcpy_htod(d_A_gemm, h_A_gemm)
-    cuda.memcpy_htod(d_B_gemm, h_B_gemm)
+    # GEMM 数据分配（只分配内存，不初始化数据）
+    d_A_gemm = cuda.mem_alloc(M * K * 4)  # float32 = 4 bytes
+    d_B_gemm = cuda.mem_alloc(K * N * 4)
+    d_C_gemm = cuda.mem_alloc(M * N * 4)
     
     # GEMM SMID 缓冲区
     d_smid_gemm_buffer = cuda.mem_alloc(gemm_num_blocks * 4)
     h_smid_gemm = np.zeros(gemm_num_blocks, dtype=np.int32)
     
-    # VecAdd 数据初始化
-    h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
-    h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
-    h_C_vec = np.empty(VEC_SIZE, dtype=np.float32)
-    d_A_vec = cuda.mem_alloc(h_A_vec.nbytes)
-    d_B_vec = cuda.mem_alloc(h_B_vec.nbytes)
-    d_C_vec = cuda.mem_alloc(h_C_vec.nbytes)
-    cuda.memcpy_htod(d_A_vec, h_A_vec)
-    cuda.memcpy_htod(d_B_vec, h_B_vec)
+    # VecAdd 数据分配（只分配内存，不初始化数据）
+    d_A_vec = cuda.mem_alloc(VEC_SIZE * 4)
+    d_B_vec = cuda.mem_alloc(VEC_SIZE * 4)
+    d_C_vec = cuda.mem_alloc(VEC_SIZE * 4)
     
     # VecAdd SMID 缓冲区
     d_smid_vecadd_buffer = cuda.mem_alloc(vecadd_num_blocks * 4)
@@ -244,18 +234,24 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
     # 用于存储SMID信息的队列
     gemm_smid_queue = Queue()
     vecadd_smid_queue = Queue()
+    
+    # 用于线程间同步的事件
+    data_ready_event = threading.Event()
+    
+    lib = load_cuda_lib()
 
     def gemm_thread_func():
         # 使用主线程分配的设备内存
-        lib = load_cuda_lib()
         gemm_blocks = dim3(gemm_blocks_config[0], gemm_blocks_config[1], gemm_blocks_config[2])
         gemm_threads = dim3(32, 32, 1)
         
         print(f"GEMM: Grid size=({gemm_blocks.x}, {gemm_blocks.y}, {gemm_blocks.z}), Block size=({gemm_threads.x}, {gemm_threads.y}, {gemm_threads.z})")
         print(f"GEMM: Total blocks={gemm_blocks.x * gemm_blocks.y * gemm_blocks.z}")
         
-        # Warmup
-        for _ in range(warmup):
+        # Warmup - 等待数据准备
+        for i in range(warmup):
+            data_ready_event.wait()  # 等待主线程准备数据
+            data_ready_event.clear()
             lib.launch_gemm(gemm_blocks, gemm_threads, int(d_A_gemm), int(d_B_gemm), int(d_C_gemm), M, N, K, int(d_smid_gemm_buffer), 0, 0, 0)
             cuda.Context.synchronize()
         print("GEMM warmup completed.")
@@ -269,6 +265,10 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
                 if barrier_log:
                     print("GEMM thread passed barrier.")
                     barrier_log = False
+            
+            data_ready_event.wait()  # 等待主线程准备数据
+            data_ready_event.clear()
+            
             start_time = time.time()
             lib.launch_gemm(gemm_blocks, gemm_threads, int(d_A_gemm), int(d_B_gemm), int(d_C_gemm), M, N, K, int(d_smid_gemm_buffer), 0, 0, 0)
             cuda.Context.synchronize()
@@ -282,15 +282,16 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
 
     def vecadd_thread_func():
         # 使用主线程分配的设备内存
-        lib = load_cuda_lib()
         vecadd_blocks = dim3(vecadd_blocks_config[0], vecadd_blocks_config[1], vecadd_blocks_config[2])
         vecadd_threads = dim3(1024, 1, 1)
         
         print(f"VecAdd: Grid size=({vecadd_blocks.x}, {vecadd_blocks.y}, {vecadd_blocks.z}), Block size=({vecadd_threads.x}, {vecadd_threads.y}, {vecadd_threads.z})")
         print(f"VecAdd: Total blocks={vecadd_blocks.x * vecadd_blocks.y * vecadd_blocks.z}")
         
-        # Warmup
-        for _ in range(warmup):
+        # Warmup - 等待数据准备
+        for i in range(warmup):
+            data_ready_event.wait()  # 等待主线程准备数据
+            data_ready_event.clear()
             lib.launch_vecadd(vecadd_blocks, vecadd_threads, int(d_A_vec), int(d_B_vec), int(d_C_vec), VEC_SIZE, int(d_smid_vecadd_buffer), 0, 0, 0)
             cuda.Context.synchronize()
         print("VecAdd warmup completed.")
@@ -304,6 +305,10 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
                 if barrier_log:
                     print("VecAdd thread passed barrier.")
                     barrier_log = False
+            
+            data_ready_event.wait()  # 等待主线程准备数据
+            data_ready_event.clear()
+            
             start_time = time.time()
             lib.launch_vecadd(vecadd_blocks, vecadd_threads, int(d_A_vec), int(d_B_vec), int(d_C_vec), VEC_SIZE, int(d_smid_vecadd_buffer), 0, 0, 0)
             cuda.Context.synchronize()
@@ -315,11 +320,42 @@ def test_parallel_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10, barrier=Fal
                 cuda.memcpy_dtoh(h_smid_vecadd, d_smid_vecadd_buffer)
                 vecadd_smid_queue.put(h_smid_vecadd.copy())
 
-    # 启动线程
+    # 启动子线程
     gemm_thread = threading.Thread(target=gemm_thread_func)
     vecadd_thread = threading.Thread(target=vecadd_thread_func)
     gemm_thread.start()
     vecadd_thread.start()
+
+    # 在主线程中生成数据并同步
+    # Warmup 数据生成
+    for i in range(warmup):
+        h_A_gemm = np.random.randn(M, K).astype(np.float32)
+        h_B_gemm = np.random.randn(K, N).astype(np.float32)
+        cuda.memcpy_htod(d_A_gemm, h_A_gemm)
+        cuda.memcpy_htod(d_B_gemm, h_B_gemm)
+        
+        h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        cuda.memcpy_htod(d_A_vec, h_A_vec)
+        cuda.memcpy_htod(d_B_vec, h_B_vec)
+        
+        data_ready_event.set()  # 通知子线程数据已准备好
+        time.sleep(0.001)  # 给子线程一点时间处理
+    
+    # 测试数据生成
+    for i in range(repeats):
+        h_A_gemm = np.random.randn(M, K).astype(np.float32)
+        h_B_gemm = np.random.randn(K, N).astype(np.float32)
+        cuda.memcpy_htod(d_A_gemm, h_A_gemm)
+        cuda.memcpy_htod(d_B_gemm, h_B_gemm)
+        
+        h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        cuda.memcpy_htod(d_A_vec, h_A_vec)
+        cuda.memcpy_htod(d_B_vec, h_B_vec)
+        
+        data_ready_event.set()  # 通知子线程数据已准备好
+        time.sleep(0.001)  # 给子线程一点时间处理
 
     gemm_thread.join()
     vecadd_thread.join()
@@ -358,22 +394,14 @@ def test_serial_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10):
     """测试串行运行的 GEMM 和 VecAdd kernel"""
     stream = cuda.Stream()
 
-    # 数据初始化
-    h_A_gemm = np.random.randn(M, K).astype(np.float32)
-    h_B_gemm = np.random.randn(K, N).astype(np.float32)
-    h_C_gemm = np.empty((M, N), dtype=np.float32)
-    d_A_gemm, d_B_gemm, d_C_gemm = cuda.mem_alloc(h_A_gemm.nbytes), cuda.mem_alloc(h_B_gemm.nbytes), cuda.mem_alloc(h_C_gemm.nbytes)
-    cuda.memcpy_htod(d_A_gemm, h_A_gemm)
-    cuda.memcpy_htod(d_B_gemm, h_B_gemm)
-    d_smid_gemm = cuda.mem_alloc(((N + 32 - 1) // 32) * ((M + 32 - 1) // 32) * 4)
+    # 数据内存分配（不初始化）
+    d_A_gemm = cuda.mem_alloc(M * K * 4)
+    d_B_gemm = cuda.mem_alloc(K * N * 4)
+    d_C_gemm = cuda.mem_alloc(M * N * 4)
 
-    h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
-    h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
-    h_C_vec = np.empty(VEC_SIZE, dtype=np.float32)
-    d_A_vec, d_B_vec, d_C_vec = cuda.mem_alloc(h_A_vec.nbytes), cuda.mem_alloc(h_B_vec.nbytes), cuda.mem_alloc(h_C_vec.nbytes)
-    cuda.memcpy_htod(d_A_vec, h_A_vec)
-    cuda.memcpy_htod(d_B_vec, h_B_vec)
-    d_smid_vecadd = cuda.mem_alloc(((VEC_SIZE + 1024 - 1) // 1024) * 4)
+    d_A_vec = cuda.mem_alloc(VEC_SIZE * 4)
+    d_B_vec = cuda.mem_alloc(VEC_SIZE * 4)
+    d_C_vec = cuda.mem_alloc(VEC_SIZE * 4)
 
     lib = load_cuda_lib()
 
@@ -397,8 +425,18 @@ def test_serial_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10):
     h_smid_gemm = np.zeros(gemm_num_blocks, dtype=np.int32)
     h_smid_vecadd = np.zeros(vecadd_num_blocks, dtype=np.int32)
 
-    # Warmup
+    # Warmup - 每次生成新的随机数据
     for _ in range(warmup):
+        h_A_gemm = np.random.randn(M, K).astype(np.float32)
+        h_B_gemm = np.random.randn(K, N).astype(np.float32)
+        cuda.memcpy_htod(d_A_gemm, h_A_gemm)
+        cuda.memcpy_htod(d_B_gemm, h_B_gemm)
+        
+        h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        cuda.memcpy_htod(d_A_vec, h_A_vec)
+        cuda.memcpy_htod(d_B_vec, h_B_vec)
+        
         lib.launch_gemm(gemm_blocks, gemm_threads,
                         int(d_A_gemm), int(d_B_gemm), int(d_C_gemm), M, N, K, int(d_smid_gemm_buffer), stream.handle, 0, 0)
         stream.synchronize()
@@ -408,11 +446,17 @@ def test_serial_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10):
 
     print("Serial warmup completed.")
 
-    # Run
+    # Run - 每次运行都生成新的随机数据
     gemm_times = []
     vecadd_times = []
 
     for i in range(repeats):
+        # 为GEMM生成新的随机数据
+        h_A_gemm = np.random.randn(M, K).astype(np.float32)
+        h_B_gemm = np.random.randn(K, N).astype(np.float32)
+        cuda.memcpy_htod(d_A_gemm, h_A_gemm)
+        cuda.memcpy_htod(d_B_gemm, h_B_gemm)
+        
         start_time = time.time()
         lib.launch_gemm(gemm_blocks, gemm_threads,
                         int(d_A_gemm), int(d_B_gemm), int(d_C_gemm), M, N, K, int(d_smid_gemm_buffer), stream.handle, 0, 0)
@@ -420,6 +464,12 @@ def test_serial_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10):
         end_time = time.time()
         gemm_times.append(end_time - start_time)
 
+        # 为VecAdd生成新的随机数据
+        h_A_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        h_B_vec = np.random.randn(VEC_SIZE).astype(np.float32)
+        cuda.memcpy_htod(d_A_vec, h_A_vec)
+        cuda.memcpy_htod(d_B_vec, h_B_vec)
+        
         start_time = time.time()
         lib.launch_vecadd(vecadd_blocks, vecadd_threads,
                           int(d_A_vec), int(d_B_vec), int(d_C_vec), VEC_SIZE, int(d_smid_vecadd_buffer), stream.handle, 0, 0)
@@ -447,10 +497,10 @@ def test_serial_kernels(M, N, K, VEC_SIZE, repeats=100, warmup=10):
 
 if __name__ == "__main__":
     print("\n--- Testing Serial Kernels ---")
-    serial_gemm_time, serial_vecadd_time = test_serial_kernels(M=32, N=32, K=8192, VEC_SIZE=1024 * 2, repeats=100, warmup=10)
+    serial_gemm_time, serial_vecadd_time = test_serial_kernels(M=128, N=128, K=4096, VEC_SIZE=1024 * 24, repeats=100, warmup=10)
 
     print("\n--- Testing Parallel Kernels ---")
-    parallel_gemm_time, parallel_vecadd_time = test_parallel_kernels(M=32, N=32, K=8192, VEC_SIZE=1024 * 2, repeats=100, warmup=10, barrier=True)
+    parallel_gemm_time, parallel_vecadd_time = test_parallel_kernels(M=128, N=128, K=4096, VEC_SIZE=1024 * 24, repeats=100, warmup=10, barrier=True)
 
     print("\n--- Comparison ---")
     print(f"Serial GEMM kernel average time: {serial_gemm_time:.3f} ms.")
